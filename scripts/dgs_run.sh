@@ -22,7 +22,7 @@ module load cuda/11.7
 conda info --envs
 
 conda activate llmtrain_env
-
+pip install openai
 echo "Running python script..."
 
 python dgs.py --use_quantize 0

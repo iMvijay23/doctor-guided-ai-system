@@ -4,11 +4,13 @@ import torch
 import openai
 import numpy as np
 import re
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, PeftModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from peft import PeftModel, PeftConfig, PeftModelForCausalLM
+
 
 
 def load_config():
-    with open('config.json') as f:
+    with open('/home/vtiyyal1/askdocs/Doctor-Guided-AI/config.json') as f:
         return json.load(f)
 
 config = load_config()
@@ -96,9 +98,14 @@ class DoctorGuidedSystem:
         return model
 
     def load_empathy_model(self, empathy_model_path):
-        base_model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto")
-        empathy_model = PeftModelForCausalLM.from_pretrained(base_model, empathy_model_path)
-        return empathy_model.merge_and_unload().half().to(self.device)
+        bnb_config = BitsAndBytesConfig(
+        load_in_4bit = True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16
+        )
+        peftconfig = PeftConfig.from_pretrained(empathy_model_path)
+        empathy_model = AutoModelForCausalLM.from_pretrained(peftconfig.base_model_name_or_path, return_dict=True, quantization_config=bnb_config, device_map="auto")
+        return empathy_model
 
     def generate(self, prompt, **kwargs):
         if self.llm == "openai":
@@ -124,17 +131,17 @@ class DoctorGuidedSystem:
 
     def breakdown_medical_advice(self, medical_advice):
         prompt = f"Break down the following medical advice into key facts or claims. List each fact or claim on a new line:\nMedical Advice: {medical_advice}"
-        key_facts = self.generate(prompt, max_tokens=150)
+        key_facts = self.generate(prompt, max_new_tokens=256)
         return key_facts
 
     def generate_expanded_response(self, question, key_facts, original_response):
         prompt = f"Using the following key facts derived from a doctor's response, generate a comprehensive response to the patient's question. Ensure the expanded response is detailed and easy to understand, without changing the original medical advice.\nKey Facts: {key_facts}\nOriginal Response: {original_response}\nPatient Query: {question}"
-        expanded_response = self.generate(prompt, max_tokens=300)
+        expanded_response = self.generate(prompt, max_new_tokens=256)
         return expanded_response
 
     def verify_claims(self, response, original_response):
         prompt = f"Compare the following claims with the original doctor's advice. For each claim, indicate whether it is supported by the original advice or not. Provide a detailed breakdown.\nOriginal Doctor's Advice: {original_response}\nClaims: {response}"
-        verified_response = self.generate(prompt, max_tokens=500)
+        verified_response = self.generate(prompt, max_new_tokens=256)
         
         # Parse the verified response to create a structured output
         claims = re.split(r'\n(?=\d+\.)', verified_response)
@@ -158,7 +165,7 @@ class DoctorGuidedSystem:
     
         prompt = f"""<s>[INST] <<SYS>> ###System: You are a helpful, respectful, and honest assistant. Always answer as helpfully as possible, while being safe. Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature. If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information. Additionally, the goal is to augment the empathy in medical responses without altering any factual medical content. For context, here is the question related to the medical response: <</SYS>>[INST] ###Question: {question} And here is the original response that needs to be more empathetic: ###Answer: {verified_response} [/INST] ###Empathetic Response:"""
     
-        empathetic_response = self.generate(prompt, max_tokens=256)
+        empathetic_response = self.generate(prompt, max_new_tokens=256)
         return empathetic_response.strip()
 
     def evaluate_response(self, response, original_response):
@@ -211,7 +218,7 @@ def run_pipeline(system, data, batch_size, llm="openai"):
             #scores = system.evaluate_response(empathetic_response, processed_data['response'])
             
             result = {
-                'primaryid': item['primaryid']
+                'primaryid': item['primaryid'],
                 'query': query,
                 'original_response': response,
                 'key_facts': key_facts,
