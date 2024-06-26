@@ -24,7 +24,7 @@ REPHRASING_MODEL_PATH = "meta-llama/Llama-2-7b-chat-hf"
 
 # Data path
 DATA_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/high_quality_long_answers_data_apr10.json"
-RESULTS_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/doctor-guided-system/dgs_trial5_results.json"
+RESULTS_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/doctor-guided-system/dgs_trial7_results.json"
 
 class FactEvaluatorOpenAI:
     def __init__(self, threshold_score=7.0, min_avg_score=5.0, min_supported_percentage=0.5):
@@ -180,6 +180,11 @@ class DoctorGuidedSystem:
             outputs = self.model.generate(**inputs, **kwargs)
             return self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
+    def generate_with_empathy_model(self, prompt, **kwargs):
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        outputs = self.empathy_model.generate(**inputs, **kwargs)
+        return self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+
 
     def process_query_response(self, patient_query, doctor_response):
         return {
@@ -224,8 +229,12 @@ class DoctorGuidedSystem:
         verified_response = " ".join([claim for claim in verified_claims if verified_claims[claim] >= 7.0])    
         prompt = f"""###System: You are a helpful, respectful, and honest assistant. Always answer as helpfully as possible, while being safe. Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature. If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information. Additionally, the goal is to augment the empathy in medical responses without altering any factual medical content. For context, here is the question related to the medical response:\n###Question: {question}\nAnd here is the original response that needs to be more empathetic:\n###Answer: {verified_response}\n###Empathetic Response:"""
     
-        empathetic_response = self.generate(prompt, max_new_tokens=512)
-        return empathetic_response.strip()
+        empathetic_response = self.generate_with_empathy_model(prompt, max_new_tokens=512).strip()
+        # Extract text after "###Empathetic Response:"
+        if "###Empathetic Response:" in empathetic_response:
+            empathetic_response = empathetic_response.split("###Empathetic Response:")[1].strip()
+
+        return empathetic_response
 
     def evaluate_response(self, response, original_response):
         factuality_score, fact_comparison = self.evaluate_factuality(response, original_response)
