@@ -1,13 +1,11 @@
 import os
 import json
-import torch
-import openai
 import numpy as np
 import re
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-from peft import PeftModel, PeftConfig, PeftModelForCausalLM
-
-
+from tqdm import tqdm
+import torch
+import openai
 
 def load_config():
     with open('/home/vtiyyal1/askdocs/Doctor-Guided-AI/config.json') as f:
@@ -27,13 +25,16 @@ REPHRASING_MODEL_PATH = "meta-llama/Llama-2-7b-chat-hf"
 DATA_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/high_quality_long_answers_data_apr10.json"
 RESULTS_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/doctor-guided-system/dgs_trial2_results.json"
 
-class FactEvaluator:
-    def __init__(self, openai_key):
-        self.openai_key = openai_key
-        openai.api_key = self.openai_key
+class FactEvaluatorOpenAI:
+    def __init__(self, threshold_score=7.0, min_avg_score=5.0, min_supported_percentage=0.5):
+        openai.api_key = os.getenv("OPENAI_API_KEY")
+        self.client = openai
+        self.threshold_score = threshold_score
+        self.min_avg_score = min_avg_score
+        self.min_supported_percentage = min_supported_percentage
 
     def generate_atomic_facts(self, text):
-        response = openai.ChatCompletion.create(
+        response = self.client.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You will break down the text into atomic facts."},
@@ -47,15 +48,15 @@ class FactEvaluator:
         return facts
 
     def compare_facts_with_reference(self, fact, reference):
-        response = openai.ChatCompletion.create(
+        response = self.client.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "system", "content": "You will assess factual consistency."},
                 {"role": "user", "content": f"Rate on a scale from 0-10 (only give the score), how much this statement: '{fact}' is supported by the reference: '{reference}'."}
             ],
             max_tokens=15
         )
-        score = response.choices[0].message.content.strip()
+        score = response.choices[0].message['content'].strip()
         try:
             return float(score)
         except ValueError:
@@ -76,6 +77,54 @@ class FactEvaluator:
         passes_test = bool(overall_score >= self.min_avg_score and supported_percentage >= self.min_supported_percentage)
 
         return overall_score, fact_scores, passes_test
+
+class FactEvaluatorLocal:
+    def __init__(self, model, tokenizer, device="cuda", threshold_score=7.0, min_avg_score=5.0, min_supported_percentage=0.5):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.device = device
+        self.threshold_score = threshold_score
+        self.min_avg_score = min_avg_score
+        self.min_supported_percentage = min_supported_percentage
+
+    def generate_atomic_facts(self, text):
+        prompt = f"Extract atomic facts from the following text:\n{text}\n###Atomic Facts:"
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        outputs = self.model.generate(**inputs, max_new_tokens=150)
+        raw_facts = self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+        # Extract facts after the tag
+        if "###Atomic Facts:" in raw_facts:
+            raw_facts = raw_facts.split("###Atomic Facts:")[1].strip()
+        facts = re.split(r'\n|;', raw_facts)
+        facts = [fact.strip() for fact in facts if fact.strip()]
+        return facts
+
+    def compare_facts_with_reference(self, fact, reference):
+        prompt = f"Rate on a scale from 0-10, how much this statement: '{fact}' is supported by the reference: '{reference}'. Only give the score."
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        outputs = self.model.generate(**inputs, max_new_tokens=15)
+        score = self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+        try:
+            return float(score)
+        except ValueError:
+            return 0.0
+
+    def evaluate_hallucination_level(self, generation, reference):
+        gen_facts = self.generate_atomic_facts(generation)
+        fact_scores = {}
+        supported_count = 0
+        for fact in gen_facts:
+            score = self.compare_facts_with_reference(fact, reference)
+            fact_scores[fact] = score
+            if score >= self.threshold_score:
+                supported_count += 1
+
+        overall_score = np.mean(list(fact_scores.values())) if fact_scores else 0
+        supported_percentage = supported_count / len(gen_facts) if gen_facts else 0
+        passes_test = bool(overall_score >= self.min_avg_score and supported_percentage >= self.min_supported_percentage)
+
+        return overall_score, fact_scores, passes_test
+
 
 class DoctorGuidedSystem:
     def __init__(self, llm, empathy_model_path=None, medical_db_api=None, device="cuda", use_quantize=False):
@@ -169,27 +218,6 @@ class DoctorGuidedSystem:
         expanded_response = self.generate(prompt, max_new_tokens=256)
         return expanded_response.split("###Expanded Response:")[1].strip()
 
-    def verify_claims(self, response, original_response):
-        prompt = f"Compare the following claims with the original doctor's advice. For each claim, indicate whether it is supported by the original advice or not. Provide a detailed breakdown.\nOriginal Doctor's Advice: {original_response}\nClaims: {response}\n###Verified Claims:"
-        verified_response = self.generate(prompt, max_new_tokens=256)
-        
-        # Parse the verified response to create a structured output
-        verified_response = verified_response.split("###Verified Claims:")[1].strip()
-        claims = re.split(r'\n(?=\d+\.)', verified_response)
-        structured_claims = []
-        for claim in claims:
-            if claim.strip():
-                parts = claim.split(':')
-                if len(parts) >= 2:
-                    claim_text = ':'.join(parts[1:]).strip()
-                    is_supported = "supported" in claim_text.lower()
-                    structured_claims.append({
-                        "claim": claim_text,
-                        "supported": is_supported
-                    })
-        
-        return structured_claims
-
     def inject_empathy(self, question, verified_claims):
         # Combine verified claims into a single response
         verified_response = " ".join([claim["claim"] for claim in verified_claims if claim["supported"]])
@@ -211,7 +239,10 @@ class DoctorGuidedSystem:
         }
 
     def evaluate_factuality(self, response, original_response):
-        evaluator = FactEvaluator(openai_key=os.environ["OPENAI_API_KEY"])
+        if self.llm == "openai":
+            evaluator = FactEvaluatorOpenAI(threshold_score=7.0, min_avg_score=5.0, min_supported_percentage=0.5)
+        else:
+            evaluator = FactEvaluatorLocal(self.model, self.tokenizer, self.device, threshold_score=7.0, min_avg_score=5.0, min_supported_percentage=0.5)
         return evaluator.evaluate_hallucination_level(response, original_response)
 
     def evaluate_quality(self, response):
@@ -227,12 +258,8 @@ def load_data(filepath):
         data = json.load(file)
     return data
 
-import os
-
 def save_result(result, filepath):
-    # Check if the file already exists and has content
     if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
-        # Read the existing content and remove the last closing bracket
         with open(filepath, 'r+') as file:
             file.seek(0, os.SEEK_END)
             pos = file.tell() - 1
@@ -242,24 +269,18 @@ def save_result(result, filepath):
             if pos > 0:
                 file.seek(pos, os.SEEK_SET)
                 file.truncate()
-                # Append a comma before adding new object if the array is not empty
                 file.write(',')
             else:
-                # No valid JSON data; start a new array
                 file.seek(0)
                 file.truncate()
                 file.write('[')
     else:
-        # File does not exist or is empty, start a new array
         with open(filepath, 'w') as file:
             file.write('[')
 
-    # Append new JSON object and close array bracket
     with open(filepath, 'a') as file:
         json.dump(result, file)
         file.write(']')
-
-
 
 def run_pipeline(system, data, batch_size, llm="openai"):
     for i in range(0, len(data), batch_size):
@@ -271,11 +292,12 @@ def run_pipeline(system, data, batch_size, llm="openai"):
             processed_data = system.process_query_response(query, response)
             key_facts = system.breakdown_medical_advice(processed_data['response'])
             expanded_response = system.generate_expanded_response(processed_data['query'], key_facts, processed_data['response'])
-            verified_claims = system.verify_claims(expanded_response, processed_data['response'])
-            verified_claims_response = " ".join([claim["claim"] for claim in verified_claims if claim["supported"]])
-            
-            empathetic_response = system.inject_empathy(query, verified_claims)
-            #scores = system.evaluate_response(empathetic_response, processed_data['response'])
+
+            # Decompose expanded response into key facts and verify them
+            overall_score, fact_scores, passes_test = system.evaluate_factuality(expanded_response, processed_data['response'])
+            supported_facts = {fact: score for fact, score in fact_scores.items() if score >= 7.0}
+
+            empathetic_response = system.inject_empathy(query, supported_facts.keys())
             
             result = {
                 'primaryid': item['primaryid'],
@@ -283,10 +305,11 @@ def run_pipeline(system, data, batch_size, llm="openai"):
                 'original_response': response,
                 'key_facts': key_facts,
                 'expanded_response': expanded_response,
-                'verified_claims': verified_claims,
-                'verified_claims_response': verified_claims_response,
-                'empathetic_response': empathetic_response,
-                #'scores': scores
+                'gen_facts': list(fact_scores.keys()),
+                'fact_scores': fact_scores,
+                'supported_facts': supported_facts,
+                'passes_test': passes_test,
+                'empathetic_response': empathetic_response
             }
             
             save_result(result, RESULTS_PATH)
