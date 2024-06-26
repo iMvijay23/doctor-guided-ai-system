@@ -125,7 +125,6 @@ class FactEvaluatorLocal:
 
         return overall_score, fact_scores, passes_test
 
-
 class DoctorGuidedSystem:
     def __init__(self, llm, empathy_model_path=None, medical_db_api=None, device="cuda", use_quantize=False):
         self.llm = llm
@@ -238,8 +237,8 @@ class DoctorGuidedSystem:
             'fact_comparison': fact_comparison
         }
 
-    def evaluate_factuality(self, response, original_response):
-        if self.llm == "openai":
+    def evaluate_factuality(self, response, original_response, use_openai=False):
+        if use_openai:
             evaluator = FactEvaluatorOpenAI(threshold_score=7.0, min_avg_score=5.0, min_supported_percentage=0.5)
         else:
             evaluator = FactEvaluatorLocal(self.model, self.tokenizer, self.device, threshold_score=7.0, min_avg_score=5.0, min_supported_percentage=0.5)
@@ -282,7 +281,7 @@ def save_result(result, filepath):
         json.dump(result, file)
         file.write(']')
 
-def run_pipeline(system, data, batch_size, llm="openai"):
+def run_pipeline(system, data, batch_size, llm="openai", use_openai_for_facts=False):
     for i in range(0, len(data), batch_size):
         batch = data[i:i+batch_size]
         
@@ -293,8 +292,8 @@ def run_pipeline(system, data, batch_size, llm="openai"):
             key_facts = system.breakdown_medical_advice(processed_data['response'])
             expanded_response = system.generate_expanded_response(processed_data['query'], key_facts, processed_data['response'])
 
-            # Decompose expanded response into key facts and verify them
-            overall_score, fact_scores, passes_test = system.evaluate_factuality(expanded_response, processed_data['response'])
+            # Explicitly use OpenAI for fact-checking even if the rest of the system is local
+            overall_score, fact_scores, passes_test = system.evaluate_factuality(expanded_response, processed_data['response'], use_openai=use_openai_for_facts)
             supported_facts = {fact: score for fact, score in fact_scores.items() if score >= 7.0}
 
             empathetic_response = system.inject_empathy(query, supported_facts.keys())
@@ -319,6 +318,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Run inference on a model.")
     parser.add_argument("--use_quantize", type=int, default=0, help="Use quantization if set to 1.")
+    parser.add_argument("--use_openai_for_facts", type=bool, default=False, help="Use OpenAI for fact-checking if set to True.")
     args = parser.parse_args()
 
     llm = "local"  # or "openai"
@@ -326,4 +326,4 @@ if __name__ == "__main__":
     system = DoctorGuidedSystem(llm, empathy_model_path=empathy_model, medical_db_api=None, device="cuda", use_quantize=bool(args.use_quantize))
 
     data = load_data(DATA_PATH)
-    run_pipeline(system, data, batch_size=2, llm=llm)
+    run_pipeline(system, data, batch_size=2, llm=llm, use_openai_for_facts=args.use_openai_for_facts)
