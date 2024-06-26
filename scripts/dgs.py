@@ -25,7 +25,7 @@ REPHRASING_MODEL_PATH = "meta-llama/Llama-2-7b-chat-hf"
 
 # Data path
 DATA_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/high_quality_long_answers_data_apr10.json"
-RESULTS_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/doctor-guided-system/dgs_trial1_results.json"
+RESULTS_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/doctor-guided-system/dgs_trial2_results.json"
 
 class FactEvaluator:
     def __init__(self, openai_key):
@@ -36,8 +36,8 @@ class FactEvaluator:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": f"Extract atomic facts from this text: {text}"}
+                {"role": "system", "content": "You will break down the text into atomic facts."},
+                {"role": "user", "content": f"Extract atomic facts from the following text:\n{text}"}
             ],
             max_tokens=150
         )
@@ -51,23 +51,31 @@ class FactEvaluator:
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": f"Does the statement: '{fact}' logically follow from the reference: '{reference}'? Answer True or False."}
+                {"role": "user", "content": f"Rate on a scale from 0-10 (only give the score), how much this statement: '{fact}' is supported by the reference: '{reference}'."}
             ],
-            max_tokens=10
+            max_tokens=15
         )
-        return response.choices[0].message['content'].strip().lower() == "true"
+        score = response.choices[0].message.content.strip()
+        try:
+            return float(score)
+        except ValueError:
+            return 0.0
 
     def evaluate_hallucination_level(self, generation, reference):
         gen_facts = self.generate_atomic_facts(generation)
-        ref_facts = self.generate_atomic_facts(reference)
-        
-        comparison_results = []
-        for gen_fact in gen_facts:
-            is_supported = any(self.compare_facts_with_reference(gen_fact, ref_fact) for ref_fact in ref_facts)
-            comparison_results.append({"fact": gen_fact, "supported": is_supported})
-        
-        overall_score = sum(result["supported"] for result in comparison_results) / len(comparison_results) if comparison_results else 0
-        return overall_score, comparison_results
+        fact_scores = {}
+        supported_count = 0
+        for fact in gen_facts:
+            score = self.compare_facts_with_reference(fact, reference)
+            fact_scores[fact] = score
+            if score >= self.threshold_score:
+                supported_count += 1
+
+        overall_score = np.mean(list(fact_scores.values())) if fact_scores else 0
+        supported_percentage = supported_count / len(gen_facts) if gen_facts else 0
+        passes_test = bool(overall_score >= self.min_avg_score and supported_percentage >= self.min_supported_percentage)
+
+        return overall_score, fact_scores, passes_test
 
 class DoctorGuidedSystem:
     def __init__(self, llm, empathy_model_path=None, medical_db_api=None, device="cuda", use_quantize=False):
@@ -130,20 +138,43 @@ class DoctorGuidedSystem:
         }
 
     def breakdown_medical_advice(self, medical_advice):
-        prompt = f"Break down the following medical advice into key facts or claims. List each fact or claim on a new line:\nMedical Advice: {medical_advice}"
+        prompt = f"Break down the following medical advice into key facts or claims. List each fact or claim on a new line, starting with a dash (-). Do not include any other text:\nMedical Advice: {medical_advice}\n###Key Facts:"
         key_facts = self.generate(prompt, max_new_tokens=256)
+        return self.post_process_key_facts(key_facts, medical_advice)
+
+    def post_process_key_facts(self, key_facts, original_response):
+        # Remove any text before "Key Facts:" if present
+        if "Key Facts:" in key_facts:
+            key_facts = key_facts.split("Key Facts:")[1].strip()
+        
+        # Remove any overlap with the original response
+        overlap = self.find_overlap(original_response, key_facts)
+        if overlap:
+            key_facts = key_facts[len(overlap):].strip()
+        
+        # Ensure each fact starts with a dash
+        key_facts = '\n'.join([f"- {fact.lstrip('- ')}" for fact in key_facts.split('\n') if fact.strip()])
+        
         return key_facts
 
+    def find_overlap(self, str1, str2):
+        # Find the longest overlap between the end of str1 and the start of str2
+        for i in range(min(len(str1), len(str2)), 0, -1):
+            if str1[-i:] == str2[:i]:
+                return str2[:i]
+        return ""
+
     def generate_expanded_response(self, question, key_facts, original_response):
-        prompt = f"Using the following key facts derived from a doctor's response, generate a comprehensive response to the patient's question. Ensure the expanded response is detailed and easy to understand, without changing the original medical advice.\nKey Facts: {key_facts}\nOriginal Response: {original_response}\nPatient Query: {question}"
+        prompt = f"Using the following key facts, generate a comprehensive response to the patient's question. Ensure the expanded response is detailed and easy to understand, without changing the original medical advice.\nKey Facts:\n{key_facts}\nPatient Query: {question}\n###Expanded Response:"
         expanded_response = self.generate(prompt, max_new_tokens=256)
-        return expanded_response
+        return expanded_response.split("###Expanded Response:")[1].strip()
 
     def verify_claims(self, response, original_response):
-        prompt = f"Compare the following claims with the original doctor's advice. For each claim, indicate whether it is supported by the original advice or not. Provide a detailed breakdown.\nOriginal Doctor's Advice: {original_response}\nClaims: {response}"
+        prompt = f"Compare the following claims with the original doctor's advice. For each claim, indicate whether it is supported by the original advice or not. Provide a detailed breakdown.\nOriginal Doctor's Advice: {original_response}\nClaims: {response}\n###Verified Claims:"
         verified_response = self.generate(prompt, max_new_tokens=256)
         
         # Parse the verified response to create a structured output
+        verified_response = verified_response.split("###Verified Claims:")[1].strip()
         claims = re.split(r'\n(?=\d+\.)', verified_response)
         structured_claims = []
         for claim in claims:
@@ -165,7 +196,7 @@ class DoctorGuidedSystem:
     
         prompt = f"""<s>[INST] <<SYS>> ###System: You are a helpful, respectful, and honest assistant. Always answer as helpfully as possible, while being safe. Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature. If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information. Additionally, the goal is to augment the empathy in medical responses without altering any factual medical content. For context, here is the question related to the medical response: <</SYS>>[INST] ###Question: {question} And here is the original response that needs to be more empathetic: ###Answer: {verified_response} [/INST] ###Empathetic Response:"""
     
-        empathetic_response = self.generate(prompt, max_new_tokens=256)
+        empathetic_response = self.generate(prompt, max_new_tokens=512)
         return empathetic_response.strip()
 
     def evaluate_response(self, response, original_response):
@@ -196,10 +227,39 @@ def load_data(filepath):
         data = json.load(file)
     return data
 
+import os
+
 def save_result(result, filepath):
+    # Check if the file already exists and has content
+    if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+        # Read the existing content and remove the last closing bracket
+        with open(filepath, 'r+') as file:
+            file.seek(0, os.SEEK_END)
+            pos = file.tell() - 1
+            while pos > 0 and file.read(1) != "]":
+                pos -= 1
+                file.seek(pos, os.SEEK_SET)
+            if pos > 0:
+                file.seek(pos, os.SEEK_SET)
+                file.truncate()
+                # Append a comma before adding new object if the array is not empty
+                file.write(',')
+            else:
+                # No valid JSON data; start a new array
+                file.seek(0)
+                file.truncate()
+                file.write('[')
+    else:
+        # File does not exist or is empty, start a new array
+        with open(filepath, 'w') as file:
+            file.write('[')
+
+    # Append new JSON object and close array bracket
     with open(filepath, 'a') as file:
         json.dump(result, file)
-        file.write('\n')
+        file.write(']')
+
+
 
 def run_pipeline(system, data, batch_size, llm="openai"):
     for i in range(0, len(data), batch_size):
