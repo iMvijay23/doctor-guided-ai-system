@@ -2,7 +2,7 @@
 
 #SBATCH --job-name=dgs_run1
 #SBATCH --time=48:00:00
-#SBATCH --partition=a100
+#SBATCH --partition=ica100
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=12
@@ -22,6 +22,7 @@ conda info --envs
 
 conda activate llmtrain_env
 #pip install --upgrade openai
+pip install sentence-transformers
 
 export TOKENIZERS_PARALLELISM=false
 echo "Running python script..."

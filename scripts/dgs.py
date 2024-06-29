@@ -2,11 +2,14 @@ import os
 import json
 import numpy as np
 import re
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoModelForSequenceClassification
 from tqdm import tqdm
 import torch
 import openai
 from peft import PeftModel, PeftConfig, PeftModelForCausalLM
+import pandas as pd
+from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
 
 def load_config():
     with open('/home/vtiyyal1/askdocs/Doctor-Guided-AI/config.json') as f:
@@ -377,6 +380,7 @@ def save_result(result, filepath):
 
 def run_pipeline(system, data, batch_size, llm="openai", use_openai_for_facts=False):
     supported_fact_filter = SupportedFactFilter('emilyalsentzer/Bio_ClinicalBERT', device="cuda")
+    sentence_model = SentenceTransformer('emilyalsentzer/Bio_ClinicalBERT')
     for i in range(0, len(data), batch_size):
         batch = data[i:i+batch_size]
         
@@ -394,7 +398,7 @@ def run_pipeline(system, data, batch_size, llm="openai", use_openai_for_facts=Fa
             expanded_key_facts = system.breakdown_medical_advice(expanded_response)
             
             # Evaluate factuality of expanded key facts against original response
-            supported_facts_scores = supported_fact_filter.filter_supported_facts(original_key_facts, expanded_key_facts, supported_fact_filter.model, similarity_threshold=0.7)
+            supported_facts_scores = supported_fact_filter.filter_supported_facts(original_key_facts, expanded_key_facts, sentence_model, similarity_threshold=0.7)
             
             supported_facts = {fact: score for fact, score in supported_facts_scores.items() if score >= 7.0}
             # Generate intermediary response using supported facts
