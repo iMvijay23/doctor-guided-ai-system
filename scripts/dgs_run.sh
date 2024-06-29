@@ -21,7 +21,7 @@ module load cuda/11.7
 conda info --envs
 
 conda activate llmtrain_env
-pip install --upgrade openai
+#pip install --upgrade openai
 
 export TOKENIZERS_PARALLELISM=false
 echo "Running python script..."

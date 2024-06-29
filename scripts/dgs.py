@@ -24,7 +24,7 @@ REPHRASING_MODEL_PATH = "meta-llama/Llama-2-7b-chat-hf"
 
 # Data path
 DATA_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/high_quality_long_answers_data_apr10.json"
-RESULTS_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/doctor-guided-system/dgs_trial7_results.json"
+RESULTS_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/doctor-guided-system/dgs_results_trial8_factfilterbert.json"
 
 class FactEvaluatorOpenAI:
     def __init__(self, threshold_score=7.0, min_avg_score=5.0, min_supported_percentage=0.5):
@@ -49,11 +49,16 @@ class FactEvaluatorOpenAI:
         return facts
 
     def compare_facts_with_reference(self, fact, reference):
+        prompt = (f"Evaluate the following statement for its support by the given reference on a scale from 0 to 10, where 0 means 'not supported at all' and 10 means 'fully supported'. "
+          f"Only provide the numeric score.\n\n"
+          f"Statement: '{fact}'\n"
+          f"Reference: '{reference}'\n"
+          f"Score:")
         response = self.client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You will assess factual consistency."},
-                {"role": "user", "content": f"Rate on a scale from 0-10 (only give the score), how much this statement: '{fact}' is supported by the reference: '{reference}'."}
+                {"role": "user", "content": prompt}
             ],
             max_tokens=15
         )
@@ -65,6 +70,21 @@ class FactEvaluatorOpenAI:
 
     def evaluate_hallucination_level(self, generation, reference):
         gen_facts = self.generate_atomic_facts(generation)
+        fact_scores = {}
+        supported_count = 0
+        for fact in gen_facts:
+            score = self.compare_facts_with_reference(fact, reference)
+            fact_scores[fact] = score
+            if score >= self.threshold_score:
+                supported_count += 1
+
+        overall_score = np.mean(list(fact_scores.values())) if fact_scores else 0
+        supported_percentage = supported_count / len(gen_facts) if gen_facts else 0
+        passes_test = bool(overall_score >= self.min_avg_score and supported_percentage >= self.min_supported_percentage)
+
+        return overall_score, fact_scores, passes_test
+
+    def evaluate_hallucination_level_facts(self, gen_facts, reference):
         fact_scores = {}
         supported_count = 0
         for fact in gen_facts:
@@ -101,7 +121,11 @@ class FactEvaluatorLocal:
         return facts
 
     def compare_facts_with_reference(self, fact, reference):
-        prompt = f"Rate on a scale from 0-10, how much this statement: '{fact}' is supported by the reference: '{reference}'. Only give the score."
+        prompt = (f"Evaluate the following statement for its support by the given reference on a scale from 0 to 10, where 0 means 'not supported at all' and 10 means 'fully supported'. "
+          f"Only provide the numeric score.\n\n"
+          f"Statement: '{fact}'\n"
+          f"Reference: '{reference}'\n"
+          f"Score:")
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         outputs = self.model.generate(**inputs, max_new_tokens=15)
         score = self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
@@ -125,6 +149,70 @@ class FactEvaluatorLocal:
         passes_test = bool(overall_score >= self.min_avg_score and supported_percentage >= self.min_supported_percentage)
 
         return overall_score, fact_scores, passes_test
+
+    def evaluate_hallucination_level_facts(self, gen_facts, reference):
+        fact_scores = {}
+        supported_count = 0
+        for fact in gen_facts:
+            score = self.compare_facts_with_reference(fact, reference)
+            fact_scores[fact] = score
+            if score >= self.threshold_score:
+                supported_count += 1
+
+        overall_score = np.mean(list(fact_scores.values())) if fact_scores else 0
+        supported_percentage = supported_count / len(gen_facts) if gen_facts else 0
+        passes_test = bool(overall_score >= self.min_avg_score and supported_percentage >= self.min_supported_percentage)
+
+        return overall_score, fact_scores, passes_test
+
+
+class SupportedFactFilter:
+    def __init__(self, model_name, device="cuda"):
+        self.tokenizer, self.model = self.load_model(model_name, device)
+        self.device = device
+
+    @staticmethod
+    def load_model(model_name, device):
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        model.to(device)
+        model.eval()
+        return tokenizer, model
+
+    def score_text(self, text):
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512).to(self.device)
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+        scores = outputs.logits.squeeze().cpu().tolist()
+        return scores[0] if isinstance(scores, list) else scores
+
+    def compare_claims(self, original_claims, expanded_claims, sentence_model, similarity_threshold=0.7):
+        if not original_claims or not expanded_claims:
+            return [], []
+
+        original_embeddings = sentence_model.encode(original_claims)
+        expanded_embeddings = sentence_model.encode(expanded_claims)
+
+        similarity_matrix = cosine_similarity(expanded_embeddings, original_embeddings)
+
+        matched_claims = []
+        for i, expanded_claim in enumerate(expanded_claims):
+            max_similarity = np.max(similarity_matrix[i])
+            if max_similarity >= similarity_threshold:
+                original_claim_index = np.argmax(similarity_matrix[i])
+                matched_claims.append({
+                    'expanded_claim': expanded_claim,
+                    'original_claim': original_claims[original_claim_index],
+                    'similarity': float(max_similarity)
+                })
+
+        return matched_claims, similarity_matrix.tolist()
+
+    def filter_supported_facts(self, original_claims, expanded_claims, sentence_model, similarity_threshold=0.7):
+        matched_claims, _ = self.compare_claims(original_claims, expanded_claims, sentence_model, similarity_threshold)
+        supported_facts = {claim['expanded_claim']: claim['similarity'] for claim in matched_claims}
+        return supported_facts
+
 
 class DoctorGuidedSystem:
     def __init__(self, llm, empathy_model_path=None, medical_db_api=None, device="cuda", use_quantize=False):
@@ -193,24 +281,21 @@ class DoctorGuidedSystem:
         }
 
     def breakdown_medical_advice(self, medical_advice):
-        prompt = f"Break down the following medical advice into key facts or claims. List each fact or claim on a new line, starting with a dash (-). Do not include any other text:\nMedical Advice: {medical_advice}\n###Key Facts:"
+        prompt = f"Break down the following medical advice into key facts or claims. Exclude any non-medical advice. List each medical fact or claim on a new line, starting with a dash (-). Do not include any other text:\nMedical Advice: {medical_advice}\n###Key Facts:"
         key_facts = self.generate(prompt, max_new_tokens=256)
         return self.post_process_key_facts(key_facts, medical_advice)
 
-    def post_process_key_facts(self, key_facts, original_response):
-        # Remove any text before "Key Facts:" if present
+    def post_process_key_facts(self, key_facts, original_text):
         if "Key Facts:" in key_facts:
             key_facts = key_facts.split("Key Facts:")[1].strip()
         
-        # Remove any overlap with the original response
-        overlap = self.find_overlap(original_response, key_facts)
+        overlap = self.find_overlap(original_text, key_facts)
         if overlap:
             key_facts = key_facts[len(overlap):].strip()
         
-        # Ensure each fact starts with a dash
-        key_facts = '\n'.join([f"- {fact.lstrip('- ')}" for fact in key_facts.split('\n') if fact.strip()])
+        facts_list = [fact.strip().lstrip('- ') for fact in key_facts.split('\n') if fact.strip()]
         
-        return key_facts
+        return facts_list
 
     def find_overlap(self, str1, str2):
         # Find the longest overlap between the end of str1 and the start of str2
@@ -224,9 +309,20 @@ class DoctorGuidedSystem:
         expanded_response = self.generate(prompt, max_new_tokens=256)
         return expanded_response.split("###Expanded Response:")[1].strip()
 
-    def inject_empathy(self, question, verified_claims):
+    def inject_empathy_claims(self, question, verified_claims):
         # Combine verified claims into a single response
         verified_response = " ".join([claim for claim in verified_claims if verified_claims[claim] >= 7.0])    
+        prompt = f"""###System: You are a helpful, respectful, and honest assistant. Always answer as helpfully as possible, while being safe. Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature. If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information. Additionally, the goal is to augment the empathy in medical responses without altering any factual medical content. For context, here is the question related to the medical response:\n###Question: {question}\nAnd here is the original response that needs to be more empathetic:\n###Answer: {verified_response}\n###Empathetic Response:"""
+    
+        empathetic_response = self.generate_with_empathy_model(prompt, max_new_tokens=512).strip()
+        # Extract text after "###Empathetic Response:"
+        if "###Empathetic Response:" in empathetic_response:
+            empathetic_response = empathetic_response.split("###Empathetic Response:")[1].strip()
+
+        return empathetic_response
+
+    def inject_empathy(self, question, verified_response):
+          
         prompt = f"""###System: You are a helpful, respectful, and honest assistant. Always answer as helpfully as possible, while being safe. Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature. If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information. Additionally, the goal is to augment the empathy in medical responses without altering any factual medical content. For context, here is the question related to the medical response:\n###Question: {question}\nAnd here is the original response that needs to be more empathetic:\n###Answer: {verified_response}\n###Empathetic Response:"""
     
         empathetic_response = self.generate_with_empathy_model(prompt, max_new_tokens=512).strip()
@@ -254,6 +350,13 @@ class DoctorGuidedSystem:
             evaluator = FactEvaluatorLocal(self.model, self.tokenizer, self.device, threshold_score=7.0, min_avg_score=5.0, min_supported_percentage=0.5)
         return evaluator.evaluate_hallucination_level(response, original_response)
 
+    def evaluate_factuality_facts(self, response, original_response, use_openai=False):
+        if use_openai:
+            evaluator = FactEvaluatorOpenAI(threshold_score=7.0, min_avg_score=5.0, min_supported_percentage=0.5)
+        else:
+            evaluator = FactEvaluatorLocal(self.model, self.tokenizer, self.device, threshold_score=7.0, min_avg_score=5.0, min_supported_percentage=0.5)
+        return evaluator.evaluate_hallucination_level_facts(response, original_response)
+
     def evaluate_quality(self, response):
         # Placeholder implementation
         return len(response.split()) / 100
@@ -273,6 +376,7 @@ def save_result(result, filepath):
         file.write('\n')
 
 def run_pipeline(system, data, batch_size, llm="openai", use_openai_for_facts=False):
+    supported_fact_filter = SupportedFactFilter('emilyalsentzer/Bio_ClinicalBERT', device="cuda")
     for i in range(0, len(data), batch_size):
         batch = data[i:i+batch_size]
         
@@ -280,26 +384,42 @@ def run_pipeline(system, data, batch_size, llm="openai", use_openai_for_facts=Fa
             query = item['question']
             response = item['answer']
             processed_data = system.process_query_response(query, response)
-            key_facts = system.breakdown_medical_advice(processed_data['response'])
-            expanded_response = system.generate_expanded_response(processed_data['query'], key_facts, processed_data['response'])
-
-            # Explicitly use OpenAI for fact-checking even if the rest of the system is local
-            overall_score, fact_scores, passes_test = system.evaluate_factuality(expanded_response, processed_data['response'], use_openai=use_openai_for_facts)
-            supported_facts = {fact: score for fact, score in fact_scores.items() if score >= 7.0}
-
-            empathetic_response = system.inject_empathy(query, supported_facts)
+            # Original response key facts
+            original_key_facts = system.breakdown_medical_advice(processed_data['response'])
+            
+            # Generate expanded response
+            expanded_response = system.generate_expanded_response(processed_data['query'], "\n".join(original_key_facts), processed_data['response'])
+            
+            # Extract key facts from expanded response
+            expanded_key_facts = system.breakdown_medical_advice(expanded_response)
+            
+            # Evaluate factuality of expanded key facts against original response
+            supported_facts_scores = supported_fact_filter.filter_supported_facts(original_key_facts, expanded_key_facts, supported_fact_filter.model, similarity_threshold=0.7)
+            
+            supported_facts = {fact: score for fact, score in supported_facts_scores.items() if score >= 7.0}
+            # Generate intermediary response using supported facts
+            intermediary_response = system.generate_expanded_response(processed_data['query'], "\n".join(supported_facts_scores.keys()), processed_data['response'])
+            
+            # Inject empathy into intermediary response
+            empathetic_response = system.inject_empathy(query, intermediary_response)
+            
+            # Extract facts from empathetic response
+            empathetic_key_facts = system.breakdown_medical_advice(empathetic_response)
             
             result = {
                 'primaryid': item['primaryid'],
                 'query': query,
                 'original_response': response,
-                'key_facts': key_facts,
+                'original_key_facts': original_key_facts,
                 'expanded_response': expanded_response,
-                'gen_facts': list(fact_scores.keys()),
-                'fact_scores': fact_scores,
+                'expanded_key_facts': expanded_key_facts,
+                'fact_scores': supported_facts_scores,
                 'supported_facts': supported_facts,
-                'passes_test': passes_test,
-                'empathetic_response': empathetic_response
+                'intermediary_response': intermediary_response,
+                'empathetic_response': empathetic_response,
+                'empathetic_key_facts': empathetic_key_facts,
+                #'passes_test': passes_test,
+                #'overall_score': overall_score
             }
             
             save_result(result, RESULTS_PATH)
