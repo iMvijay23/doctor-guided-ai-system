@@ -27,7 +27,7 @@ REPHRASING_MODEL_PATH = "meta-llama/Llama-2-7b-chat-hf"
 
 # Data path
 DATA_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/high_quality_long_answers_data_apr10.json"
-RESULTS_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/doctor-guided-system/dgs_results_trial8_factfilterbert.json"
+RESULTS_PATH = "/home/vtiyyal1/data-mdredze1/vtiyyal1/askdocschat/doctor-guided-system/dgs_results_trial9_factfilterbert.json"
 
 class FactEvaluatorOpenAI:
     def __init__(self, threshold_score=7.0, min_avg_score=5.0, min_supported_percentage=0.5):
@@ -400,9 +400,9 @@ def run_pipeline(system, data, batch_size, llm="openai", use_openai_for_facts=Fa
             # Evaluate factuality of expanded key facts against original response
             supported_facts_scores = supported_fact_filter.filter_supported_facts(original_key_facts, expanded_key_facts, sentence_model, similarity_threshold=0.7)
             
-            supported_facts = {fact: score for fact, score in supported_facts_scores.items() if score >= 7.0}
+            supported_facts = {fact: score for fact, score in supported_facts_scores.items() if score >= 0.85}
             # Generate intermediary response using supported facts
-            intermediary_response = system.generate_expanded_response(processed_data['query'], "\n".join(supported_facts_scores.keys()), processed_data['response'])
+            intermediary_response = system.generate_expanded_response(processed_data['query'], "\n".join(supported_facts.keys()), processed_data['response'])
             
             # Inject empathy into intermediary response
             empathetic_response = system.inject_empathy(query, intermediary_response)
