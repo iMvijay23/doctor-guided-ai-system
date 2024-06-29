@@ -81,8 +81,11 @@ def process_results(results_file, empathy_model_name, quality_model_name):
             primary_id = result['primaryid']
             original_response = result['original_response']
             empathy_response = result['empathetic_response']
-            original_claims = result['key_facts'].split('\n')
+            original_claims = list(result['key_facts'].split('\n'))
             empathy_claims = list(result['supported_facts'].keys())
+            print(original_claims)
+            print('=====')
+            print(empathy_claims)
 
             # Calculate scores
             orig_empathy = score_text(empathy_model, empathy_tokenizer, original_response, device)
