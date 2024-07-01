@@ -1,0 +1,28 @@
+salloc: Pending job allocation 14730356
+salloc: job 14730356 queued and waiting for resources
+salloc: job 14730356 has been allocated resources
+salloc: Granted job allocation 14730356
+salloc: Nodes icgpu04 are ready for job
+# conda environments:
+#
+base                  *  /data/apps/linux-centos8-cascadelake/gcc-9.3.0/anaconda3-2020.07-i7qavhiohb2uwqs4eqjeefzx3kp5jqdu
+FERRET                   /data/apps/linux-centos8-cascadelake/gcc-9.3.0/anaconda3-2020.07-i7qavhiohb2uwqs4eqjeefzx3kp5jqdu/envs/FERRET
+jupyter                  /data/apps/linux-centos8-cascadelake/gcc-9.3.0/anaconda3-2020.07-i7qavhiohb2uwqs4eqjeefzx3kp5jqdu/envs/jupyter
+nf-core-mhcquant-1.6.0     /data/apps/linux-centos8-cascadelake/gcc-9.3.0/anaconda3-2020.07-i7qavhiohb2uwqs4eqjeefzx3kp5jqdu/envs/nf-core-mhcquant-1.6.0
+llmtrain_env             /home/vtiyyal1/.conda/envs/llmtrain_env
+
+[I 19:05:50.426 NotebookApp] [nb_conda_kernels] enabled, 2 kernels found
+[I 19:05:50.484 NotebookApp] Writing notebook server cookie secret to /home/vtiyyal1/.local/share/jupyter/runtime/notebook_cookie_secret
+[I 19:05:52.807 NotebookApp] Serving notebooks from local directory: /home/vtiyyal1/askdocs/Doctor-Guided-AI/scripts
+[I 19:05:52.807 NotebookApp] Jupyter Notebook 6.1.4 is running at:
+[I 19:05:52.807 NotebookApp] http://c002:8888/?token=df1022734dedc91d3702f076d3676824a37ba99edb9e2546
+[I 19:05:52.807 NotebookApp]  or http://127.0.0.1:8888/?token=df1022734dedc91d3702f076d3676824a37ba99edb9e2546
+[I 19:05:52.807 NotebookApp] Use Control-C to stop this server and shut down all kernels (twice to skip confirmation).
+[C 19:05:52.824 NotebookApp] 
+    
+    To access the notebook, open this file in a browser:
+        file:///home/vtiyyal1/.local/share/jupyter/runtime/nbserver-3066722-open.html
+    Or copy and paste one of these URLs:
+        http://c002:8888/?token=df1022734dedc91d3702f076d3676824a37ba99edb9e2546
+     or http://127.0.0.1:8888/?token=df1022734dedc91d3702f076d3676824a37ba99edb9e2546
+salloc: Job allocation 14730356 has been revoked.

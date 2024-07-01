@@ -1,0 +1,28 @@
+salloc: Pending job allocation 14730291
+salloc: job 14730291 queued and waiting for resources
+salloc: job 14730291 has been allocated resources
+salloc: Granted job allocation 14730291
+salloc: Nodes icgpu01 are ready for job
+Lmod has detected the following error: The following module(s) are unknown:
+"cuda/11.7"
+
+Please check the spelling or version number. Also try "module spider ..."
+It is also possible your cache file is out-of-date; it may help to try:
+  $ module --ignore_cache load "cuda/11.7"
+
+Also make sure that all modulefiles written in TCL start with the string
+#%Module
+
+
+
+# conda environments:
+#
+base                  *  /data/apps/linux-centos8-cascadelake/gcc-9.3.0/anaconda3-2020.07-i7qavhiohb2uwqs4eqjeefzx3kp5jqdu
+FERRET                   /data/apps/linux-centos8-cascadelake/gcc-9.3.0/anaconda3-2020.07-i7qavhiohb2uwqs4eqjeefzx3kp5jqdu/envs/FERRET
+jupyter                  /data/apps/linux-centos8-cascadelake/gcc-9.3.0/anaconda3-2020.07-i7qavhiohb2uwqs4eqjeefzx3kp5jqdu/envs/jupyter
+nf-core-mhcquant-1.6.0     /data/apps/linux-centos8-cascadelake/gcc-9.3.0/anaconda3-2020.07-i7qavhiohb2uwqs4eqjeefzx3kp5jqdu/envs/nf-core-mhcquant-1.6.0
+llmtrain_env             /home/vtiyyal1/.conda/envs/llmtrain_env
+
+/bin/bash: line 11: jupyter: command not found
+salloc: Relinquishing job allocation 14730291
+salloc: Job allocation 14730291 has been revoked.
