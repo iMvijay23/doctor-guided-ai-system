@@ -1,16 +1,14 @@
 import os
+# os.environ['HF_HOME'] = '/scratch4/mdredze1/vtiyyal1/huggingface_cache/'
 import json
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from tqdm import tqdm
 import argparse
-from dataclasses import dataclass, field
-import subprocess
-from typing import Optional
-import wandb
-from huggingface_hub import HfApi, HfFolder
+from huggingface_hub import HfFolder
 
-os.environ['HF_HOME'] = '/scratch4/mdredze1/vtiyyal1/huggingface_cache/'
+# Set HuggingFace cache directory
+
 HfFolder.save_token(os.getenv('HUGGINGFACE_TOKEN'))
 
 def load_data(data_path):
@@ -18,16 +16,16 @@ def load_data(data_path):
         data = json.load(file)
     return data
 
-def save_results(results, output_path):
-    with open(output_path, 'w') as file:
-        json.dump(results, file, indent=4)
+def save_result(result, filepath):
+    with open(filepath, 'a') as file:
+        json.dump(result, file)
+        file.write('\n')
 
-def generate_responses(model, tokenizer, data, device, batch_size=1):
-    results = []
+def generate_responses(model, tokenizer, data, device, output_path, batch_size=1):
     for item in tqdm(data):
         query = item['question']
         prompt = f"###Instruction: Please provide a comprehensive and detailed response to the following patient question.\n###Patient Query: {query}\n###BaseResponse:"
-        
+
         inputs = tokenizer(prompt, return_tensors="pt").to(device)
         outputs = model.generate(**inputs, max_new_tokens=512)
         response = tokenizer.decode(outputs[0], skip_special_tokens=True)
@@ -36,13 +34,13 @@ def generate_responses(model, tokenizer, data, device, batch_size=1):
         if "###BaseResponse:" in response:
             response = response.split("###BaseResponse:")[1].strip()
         
-        results.append({
+        result = {
             'primaryid': item.get('primaryid', None),
             'question': query,
             'base_response': response
-        })
-    
-    return results
+        }
+        
+        save_result(result, output_path)
 
 def main(model_path, data_path, output_path):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -52,12 +50,11 @@ def main(model_path, data_path, output_path):
     model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float16).to(device)
     
     data = load_data(data_path)
-    results = generate_responses(model, tokenizer, data, device)
-    save_results(results, output_path)
+    generate_responses(model, tokenizer, data, device, output_path)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate base model outputs for patient questions.")
-    parser.add_argument("--model_path", type=str, required=True, help="Path to the pretrained model.")
+    parser.add_argument("--model_path", type=str, default='/home/vtiyyal1/scratch4-mdredze1/huggingface_cache/transformers', help="Path to the pretrained model.")
     parser.add_argument("--data_path", type=str, required=True, help="Path to the input data file.")
     parser.add_argument("--output_path", type=str, required=True, help="Path to save the generated responses.")
     args = parser.parse_args()
